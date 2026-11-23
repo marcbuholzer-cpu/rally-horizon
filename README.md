@@ -1,19 +1,20 @@
 # Rally Horizon
 
-**Rally Horizon** ist ein eigenständiges 3D-Rally-Spiel für den Browser, vollständig gebündelt in einer einzigen HTML-Datei (`index.html`). Es unterstützt sowohl einen **1-Spieler-Zeitjagd-Modus** mit Streckenrekorden als auch einen lokalen **2-Spieler-Splitscreen-Modus** auf drei thematisch unterschiedlichen Strecken.
+**Rally Horizon** ist ein eigenständiges 3D-Rally-Spiel für den Browser, vollständig gebündelt in einer einzigen HTML-Datei (`index.html`). Es unterstützt sowohl einen **1-Spieler-Zeitjagd-Modus** mit Streckenrekorden als auch einen lokalen **2-Spieler-Splitscreen-Modus** auf vier thematisch unterschiedlichen Strecken.
 
 ---
 
 ## Features
 
 - **1-Spieler & 2-Spieler Splitscreen:** Alleine auf Bestzeitenjagd oder zu zweit am selben Bildschirm (inkl. Fahrzeugkollisionen, Rammen & Funkenflug).
-- **3 spielbare Welten** mit individueller Physik, Gravitation, Beleuchtung und dynamischen Gefahren:
+- **4 spielbare Welten** mit individueller Physik, Gravitation, Beleuchtung und dynamischen Gefahren:
 
 | Etappe | Strecke | Gravitation | Strecken-Highlights & Gefahren |
 | :--- | :--- | :--- | :--- |
 | **01** | **Grand Canyon** | `9,81 m/s²` | 14 enge Steilwandkurven, Holz-Hängebrücke, 4× 360°-Schrauben, 360°-Looping, 5 Schanzen mit Landungsrampe, rollende Felsbrocken & Seitenwind-Böen |
 | **02** | **Mond** *(Mare Tranquillitatis)* | `1,62 m/s²` *(Low-G)* | 14 Mond-Steilwandkurven, 4× 360°-Schrauben, 360°-Looping, Astronaut, Rakete & Satellit, herabfallende Meteoriten & eisige Rutschzonen |
 | **03** | **Smaragd-Dschungel** | `9,81 m/s²` | Holz-Strecke mit Lianen, Bäumen, Flüssen, Affen & Vögeln, Holz-Hängebrücke, 4× 360°-Holz-Schrauben, 360°-Looping, rutschige Moos-Planken, morsche Bretter & Baumstamm-Schikanen |
+| **04** | **Candy Land** *(Regenbogen-Candy)* | `9,81 m/s²` | Regenbogen-Süssigkeiten-Strecke mit Zuckerstangen-Rändern, Waffel-Hängebrücke über einen Regenbogen-Sirup-Fluss, 4× 360°-Schrauben, 360°-Looping, 5 Schanzen, Regenbogen-Glaces & Lollipops als Pflanzen, Riesen-Donuts, rollende Riesen-Bonbons, Zuckerguss-Rutschzonen & Zuckerstangen-Schikanen |
 
 - **Kameraperspektiven:** Dynamische Third-Person- und First-Person-Kamera (inkl. Loop- und Schrauben-Ausrichtung).
 - **Rally-HUD:** Live-Timer, Bestzeit/Streckenrekord, Ziel-Kompass mit Distanz- und Fortschrittsanzeige, Minimap, Tacho, Gang- & Drehzahlanzeige sowie Status-Indikatoren (`GEFAHR`, `IN DER LUFT`, `DRIFT`, `HOLPRIG`, `GERAMMT!`).
@@ -60,7 +61,7 @@ Da das gesamte Spiel inklusive Engine und Texturen in `index.html` enthalten ist
 
 | Taste | Aktion |
 | :--- | :--- |
-| `1` / `2` / `3` | Direkt zur Strecke wechseln (Grand Canyon / Mond / Dschungel) |
+| `1` / `2` / `3` / `4` | Direkt zur Strecke wechseln (Grand Canyon / Mond / Dschungel / Candy Land) |
 | `Backspace` | Aktuelle Etappe neu starten |
 | `Esc` | Startmenü öffnen |
 | `M` | Ton an / aus |
