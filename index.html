@@ -5714,40 +5714,353 @@ function Df(e,t,n=.06){
   return i.translate(0,0,-(t-n*2)*.5),i.rotateY(-Math.PI/2),i.computeVertexNormals(),i;
 }
 
+
+let _carEnvTex=null;
+function getCarEnvMap(){
+  if(_carEnvTex)return _carEnvTex;
+  let cv=document.createElement(`canvas`);cv.width=512;cv.height=256;
+  let g=cv.getContext(`2d`);
+  // High-contrast GTA/Forza automotive reflection map (zenith studio strips + bright horizon + dark road bounce)
+  let bg=g.createLinearGradient(0,0,0,256);
+  bg.addColorStop(0,`#1a2740`);
+  bg.addColorStop(.26,`#4c6c99`);
+  bg.addColorStop(.46,`#dbeafe`);
+  bg.addColorStop(.50,`#ffffff`);
+  bg.addColorStop(.53,`#475569`);
+  bg.addColorStop(.72,`#1e293b`);
+  bg.addColorStop(1,`#090d16`);
+  g.fillStyle=bg;g.fillRect(0,0,512,256);
+  // Crisp bright overhead studio softbox reflections (creates sexy specular bands across curved fenders & hood!)
+  g.fillStyle=`rgba(255,255,255,.95)`;
+  g.fillRect(28,22,190,18);g.fillRect(286,22,190,18);
+  g.fillStyle=`rgba(186,230,253,.88)`;
+  g.fillRect(90,62,332,14);
+  // Warm key sun spot
+  let sun=g.createRadialGradient(380,84,4,380,84,54);
+  sun.addColorStop(0,`rgba(255,250,235,1)`);sun.addColorStop(.4,`rgba(255,235,200,.55)`);sun.addColorStop(1,`rgba(255,235,200,0)`);
+  g.fillStyle=sun;g.fillRect(320,26,120,120);
+  // Cool cyan studio rim reflection
+  let rim=g.createRadialGradient(115,96,4,115,96,62);
+  rim.addColorStop(0,`rgba(125,211,252,.92)`);rim.addColorStop(1,`rgba(125,211,252,0)`);
+  g.fillStyle=rim;g.fillRect(50,32,130,130);
+  let tx=new ra(cv);tx.mapping=303;tx.colorSpace=Fe;
+  _carEnvTex=tx;return tx;
+}
+
+// Parametric WRC Rally1 profile functions (shared by unibody, curved door decals, hood & aero!)
+function wrcHalfW(z){
+  let w=.93;
+  // Smooth elliptical rounded nose taper (-2.24..-1.80)
+  if(z<-1.80){let u=Math.min(1,(-1.80-z)/.44);w*=(1-.40*u*u*u);}
+  // Smooth tapered rounded rear (-/+1.78..+2.14)
+  if(z>1.78){let u=Math.min(1,(z-1.78)/.36);w*=(1-.24*u*u);}
+  // Muscular sculpted front widebody haunch around z = -1.34
+  let df=(z+1.34)/.48;if(Math.abs(df)<1){let c2=Math.cos(df*Math.PI*.5);w+=.115*c2*c2;}
+  // Aggressive sculpted rear widebody haunch around z = +1.28
+  let dr=(z-1.28)/.50;if(Math.abs(dr)<1){let c2=Math.cos(dr*Math.PI*.5);w+=.135*c2*c2;}
+  return w;
+}
+function wrcTopY(z){
+  // Smooth continuous WRC fastback beltline profile from rounded nose to ducktail
+  if(z<-1.88){let u=Math.min(1,(-1.88-z)/.36);return .76-.26*u*u;}
+  if(z<-.86){let u=(z+1.88)/1.02;return .76+.18*(u*(2-u));}
+  if(z<1.48){let u=(z+.86)/2.34;return .94+.06*u;}
+  if(z<1.98){let u=(z-1.48)/.50;return 1.00-.02*u*u;}
+  let u=Math.min(1,(z-1.98)/.16);return .98-.22*u*u;
+}
+function wrcBotY(z){
+  if(z<-1.85){let u=Math.min(1,(-1.85-z)/.39);return .255+.07*u*u;}
+  if(z>1.72){let u=Math.min(1,(z-1.72)/.42);return .27+.11*u*u;}
+  return .265;
+}
+function wrcWheelCutY(z){
+  // Smooth circular wheel-well arch openings at FL/FR (z=-1.34) and RL/RR (z=+1.28)
+  let cut=0;
+  for(let wz of [-1.34,1.28]){
+    let dz=z-wz,R=.485;
+    if(Math.abs(dz)<R){
+      let archY=.42+Math.sqrt(Math.max(0,R*R-dz*dz));
+      if(archY>cut)cut=archY;
+    }
+  }
+  return cut;
+}
+
+// Build continuous smooth lofted sculpted automotive unibody shell (ZERO boxy corners!)
+function buildSculptedUnibody(){
+  let zs=[];
+  for(let k=0;k<=36;k++)zs.push(-2.22+k/36*4.36);
+  // Ensure exact key stations exist smoothly
+  let nZ=zs.length,nS=16; // 16 cross-section stations per side from bottom-center -> outer flank -> top-shoulder -> inner/top-center
+  let verts=[],uvs=[],idx=[];
+  // Cross-section curve for one side (sgn = +1 right, -1 left)
+  function evalCross(z,si,sgn){
+    let hw=wrcHalfW(z),ty=wrcTopY(z),by=wrcBotY(z),wCut=wrcWheelCutY(z);
+    let inCabin=(z>-.82&&z<1.38);
+    // Arch flare height boost right over wheel wells
+    let isArch=wCut>by+.02;
+    let yLow=isArch?Math.max(by,Math.min(ty-.12,wCut)):by;
+    let h=Math.max(.08,ty-yLow);
+    let x=0,y=yLow;
+    if(si===0){x=0;y=by;} // bottom center
+    else if(si===1){x=hw*.62;y=by+.01;} // underfloor outer
+    else if(si===2){x=hw*.88;y=isArch?yLow-.02:by+.035;} // rocker sill tuck
+    else if(si<=9){
+      // Smooth curved outer door/fender flank with muscular convex swell & character crease!
+      let t=(si-2)/7; // 0..1 from lower sill to shoulder crest
+      let bow=Math.sin(t*Math.PI)*.065;
+      let crease=Math.exp(-(((t-.66)/.13)**2))*.028; // sharp subtle WRC shoulder highlight line!
+      let tumble=t>.62?((t-.62)/.38)**1.8*.11:0;
+      let xFrac=.91+bow+crease-tumble;
+      // Extra rounded bevel at front/rear tips
+      if(z<-2.04||z>1.98)xFrac*=.94;
+      x=hw*xFrac;
+      y=yLow+h*(t<.15?t*1.1:t>.85?.85+(t-.85)*.9:t);
+    }else if(si<=12){
+      // Smooth rounded top shoulder roll curving onto fender top / hood edge / beltline
+      let t=(si-9)/3; // 0..1
+      let ang=t*Math.PI*.5;
+      let edgeX=hw*.80,innerX=inCabin?.71:hw*.58;
+      x=edgeX-(edgeX-innerX)*t;
+      y=ty-.045*(1-Math.sin(ang))+Math.sin(ang)*.012;
+    }else{
+      // Top deck (curved smoothly on nose/rear, or recessed hollow cabin tub inside greenhouse!)
+      let t=(si-12)/3; // 0..1 to centerline x=0
+      if(inCabin){
+        // Drop smoothly into hollow cabin floor tub (y=0.45) so roll cage & seats sit inside!
+        x=.71*(1-t);
+        y=si===13?.88:si===14?.50:.46;
+      }else{
+        let startX=hw*.58;
+        x=startX*(1-t);
+        let crown=Math.cos((1-t)*Math.PI*.5)*.038;
+        // Slight lower hood recess so sculpted separate hood panel sits flush on top
+        let hoodDrop=(z<-.86&&z>-1.94)?-.025:0;
+        y=ty+crown+hoodDrop;
+      }
+    }
+    return [x*sgn,y,z];
+  }
+  for(let side of [1,-1]){
+    let baseV=verts.length/3;
+    for(let iz=0;iz<nZ;iz++){
+      let z=zs[iz],uZ=(z+2.22)/4.36;
+      for(let si=0;si<nS;si++){
+        let [x,y,zz]=evalCross(z,si,side);
+        verts.push(x,y,zz);
+        uvs.push(uZ,si/(nS-1));
+      }
+    }
+    for(let iz=0;iz<nZ-1;iz++){
+      for(let si=0;si<nS-1;si++){
+        let a=baseV+iz*nS+si,b=a+1,c2=baseV+(iz+1)*nS+si,d2=c2+1;
+        if(side>0)idx.push(a,b,c2,b,d2,c2);
+        else idx.push(a,c2,b,b,c2,d2);
+      }
+    }
+    // Cap nose (iz=0) & tail (iz=nZ-1) smoothly to centerline
+    for(let endI of [0,nZ-1]){
+      let z=zs[endI],cy=(wrcTopY(z)+wrcBotY(z))*.5,cIdx=verts.length/3;
+      verts.push(0,cy,z);uvs.push(endI===0?0:1,.5);
+      for(let si=0;si<nS-1;si++){
+        let v0=baseV+endI*nS+si,v1=v0+1;
+        if((side>0)===(endI===0))idx.push(cIdx,v1,v0);
+        else idx.push(cIdx,v0,v1);
+      }
+    }
+  }
+  let geo=new Or;
+  geo.setAttribute(`position`,new q(verts,3));
+  geo.setAttribute(`uv`,new q(uvs,2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Curved livery flank skin hugging the exact door contour (z = -0.86 .. +0.84, zero flat planks!)
+function buildCurvedDoorLivery(sgn){
+  let nZ=18,nY=8,verts=[],uvs=[],idx=[];
+  for(let iz=0;iz<=nZ;iz++){
+    let fz=iz/nZ,z=-.86+fz*1.70;
+    let hw=wrcHalfW(z),ty=wrcTopY(z)-.03,by=wrcBotY(z)+.05,h=ty-by;
+    for(let iy=0;iy<=nY;iy++){
+      let fy=iy/nY;
+      let bow=Math.sin(fy*Math.PI)*.065;
+      let crease=Math.exp(-(((fy-.66)/.13)**2))*.028;
+      let tumble=fy>.62?((fy-.62)/.38)**1.8*.11:0;
+      let x=(hw*(.91+bow+crease-tumble)+.009)*sgn;
+      let y=by+h*fy;
+      verts.push(x,y,z);
+      // Map door region (x = 0.25..0.75 of livery canvas so RobotMaker & #5 fill the curved door cleanly!)
+      let u=sgn<0?(0.24+fz*0.52):(0.76-fz*0.52);
+      uvs.push(u,fy);
+    }
+  }
+  for(let iz=0;iz<nZ;iz++){
+    for(let iy=0;iy<nY;iy++){
+      let a=iz*(nY+1)+iy,b=a+1,c2=(iz+1)*(nY+1)+iy,d2=c2+1;
+      if(sgn>0)idx.push(a,b,c2,b,d2,c2);
+      else idx.push(a,c2,b,b,c2,d2);
+    }
+  }
+  let geo=new Or;
+  geo.setAttribute(`position`,new q(verts,3));
+  geo.setAttribute(`uv`,new q(uvs,2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Curved sculpted WRC hood matching the exact curved nose planform & fender arch!
+function buildSculptedHood(){
+  let nX=18,nZ=14,verts=[],uvs=[],idx=[];
+  for(let iz=0;iz<=nZ;iz++){
+    let fz=iz/nZ,z=-2.02+fz*1.16; // front (-2.02) to windshield cowl (-0.86)
+    let hw=wrcHalfW(z)*.74,ty=wrcTopY(z);
+    for(let ix=0;ix<=nX;ix++){
+      let fx=ix/nX,nx=fx*2-1; // -1..1
+      let x=nx*hw;
+      // Smooth transverse dome + central rally power bulge!
+      let arch=Math.cos(nx*Math.PI*.5)*.052;
+      let bulge=Math.exp(-((nx/.30)**2))*Math.sin(fz*Math.PI)*.038;
+      let y=ty+arch+bulge+.005;
+      verts.push(x,y,z);
+      uvs.push(fx,1-fz);
+    }
+  }
+  for(let iz=0;iz<nZ;iz++)for(let ix=0;ix<nX;ix++){
+    let a=iz*(nX+1)+ix,b=a+1,c2=(iz+1)*(nX+1)+ix,d2=c2+1;
+    idx.push(a,c2,b,b,c2,d2);
+  }
+  let geo=new Or;
+  geo.setAttribute(`position`,new q(verts,3));
+  geo.setAttribute(`uv`,new q(uvs,2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Curved wrap-around windshield / rear glass / crack mesh!
+function buildCurvedGlass(z0,y0,w0,z1,y1,w1,bowAmt,nX=16,nY=10,flipWinding=!1){
+  let verts=[],uvs=[],idx=[];
+  for(let iy=0;iy<=nY;iy++){
+    let fy=iy/nY;
+    let zBase=z0+(z1-z0)*fy,yBase=y0+(y1-y0)*fy,hw=w0+(w1-w0)*fy;
+    for(let ix=0;ix<=nX;ix++){
+      let fx=ix/nX,nx=fx*2-1;
+      let x=nx*hw;
+      // Horizontal automotive wrap-around bow + subtle vertical crown
+      let bow=Math.cos(nx*Math.PI*.5)*bowAmt;
+      let yCrown=Math.cos(nx*Math.PI*.5)*.024;
+      verts.push(x,yBase+yCrown,zBase+bow);
+      uvs.push(flipWinding?fx:(1-fx),fy);
+    }
+  }
+  for(let iy=0;iy<nY;iy++)for(let ix=0;ix<nX;ix++){
+    let a=iy*(nX+1)+ix,b=a+1,c2=(iy+1)*(nX+1)+ix,d2=c2+1;
+    if(!flipWinding)idx.push(a,b,c2,b,d2,c2);
+    else idx.push(a,c2,b,b,c2,d2);
+  }
+  let geo=new Or;
+  geo.setAttribute(`position`,new q(verts,3));
+  geo.setAttribute(`uv`,new q(uvs,2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Curved double-domed aerodynamic roof panel!
+function buildCurvedRoof(){
+  let nX=16,nZ=12,verts=[],uvs=[],idx=[];
+  for(let iz=0;iz<=nZ;iz++){
+    let fz=iz/nZ,z=-.24+fz*1.12; // windshield header (-0.24) to rear hatch header (+0.88)
+    let hw=.635-.03*Math.sin(fz*Math.PI*.5);
+    let yProfile=1.435+Math.sin(fz*Math.PI)*.038;
+    for(let ix=0;ix<=nX;ix++){
+      let fx=ix/nX,nx=fx*2-1;
+      let x=nx*hw;
+      let crown=Math.cos(nx*Math.PI*.5)*.048;
+      verts.push(x,yProfile+crown,z);
+      uvs.push(fx,fz);
+    }
+  }
+  for(let iz=0;iz<nZ;iz++)for(let ix=0;ix<nX;ix++){
+    let a=iz*(nX+1)+ix,b=a+1,c2=(iz+1)*(nX+1)+ix,d2=c2+1;
+    idx.push(a,c2,b,b,c2,d2);
+  }
+  let geo=new Or;
+  geo.setAttribute(`position`,new q(verts,3));
+  geo.setAttribute(`uv`,new q(uvs,2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Swept curved tube pillar (smooth organic automotive A/B/C pillars, ZERO square sticks!)
+function buildCurvedPillar(pts,rad=.034){
+  let crv=new ba(pts.map(p=>new G(p[0],p[1],p[2])));
+  return new Fo(crv,14,rad,10,!1);
+}
+
+// True cambered NACA airfoil wing cross-section extruded smoothly!
+function buildAirfoilWing(span,chord,thick=.055){
+  let sh=new Va;
+  sh.moveTo(-chord*.5,0);
+  sh.bezierCurveTo(-chord*.35,thick*.9,chord*.1,thick*.65,chord*.5,.006);
+  sh.bezierCurveTo(chord*.15,-thick*.22,-chord*.25,-thick*.32,-chord*.5,0);
+  sh.closePath();
+  let g=new Eo(sh,{depth:span,bevelEnabled:!0,bevelThickness:.014,bevelSize:.012,bevelSegments:3,steps:6});
+  g.translate(0,0,-span*.5);g.rotateY(-Math.PI/2);g.computeVertexNormals();
+  return g;
+}
+
+// Curved elliptical carbon front splitter matching the exact rounded nose contour!
+function buildCurvedSplitter(){
+  let sh=new Va;
+  sh.moveTo(-.96,.08);
+  sh.bezierCurveTo(-.94,-.32,-.56,-.56,0,-.58);
+  sh.bezierCurveTo(.56,-.56,.94,-.32,.96,.08);
+  sh.lineTo(.84,.16);sh.lineTo(-.84,.16);sh.closePath();
+  let g=new Eo(sh,{depth:.042,bevelEnabled:!0,bevelThickness:.012,bevelSize:.012,bevelSegments:2,steps:1});
+  g.rotateX(Math.PI/2);g.computeVertexNormals();
+  return g;
+}
+
 function Of(e,t={}){
-  let n=bf[t.livery||`blue`]||bf.blue,shT=getWrcSharedTex();
+  let n=bf[t.livery||`blue`]||bf.blue,shT=getWrcSharedTex(),envM=getCarEnvMap();
   let r=new K,i=new K;r.add(i);
   let a=new $r(new zr({map:wf(n),transparent:!0,depthTest:!0,depthWrite:!1}));
   a.position.set(0,2.52,.1);a.scale.set(1.35,.76,1);a.visible=!1;r.add(a);
 
-  // PBR Materials (High-gloss metallic paint, woven carbon, titanium, glowing brakes, split L/R headlights)
-  let o=new Z({color:n.baseHex,roughness:.16,metalness:.36});
-  let s=new Z({color:n.darkHex,roughness:.26,metalness:.32});
-  let c=new Z({color:n.accentHex,roughness:.22,metalness:.26});
-  let carbonM=new Z({map:shT.carbon,roughness:.32,metalness:.48,color:15264752});
-  let l=new Z({color:1316380,roughness:.48,metalness:.42});
-  let u=new Z({color:1184795,roughness:.88,metalness:.08});
-  let d=new Z({color:14476008,roughness:.22,metalness:.88});
-  let tiMat=new Z({color:9870515,roughness:.24,metalness:.9,emissive:2631750,emissiveIntensity:.18});
-  let cageMat=new Z({color:14608108,roughness:.32,metalness:.75});
+  // GTA/Forza-Grade PBR Materials with Equirectangular Studio/Sky EnvMap Reflections!
+  let o=new Z({color:n.baseHex,roughness:.13,metalness:.46,envMap:envM,envMapIntensity:1.35,side:2});
+  let s=new Z({color:n.darkHex,roughness:.24,metalness:.36,envMap:envM,envMapIntensity:.95});
+  let c=new Z({color:n.accentHex,roughness:.20,metalness:.26,envMap:envM,envMapIntensity:.9});
+  let carbonM=new Z({map:shT.carbon,roughness:.28,metalness:.45,color:15264752,envMap:envM,envMapIntensity:.95});
+  let l=new Z({color:1316380,roughness:.42,metalness:.48,envMap:envM,envMapIntensity:.85});
+  let u=new Z({color:987414,roughness:.88,metalness:.08});
+  let d=new Z({color:14870000,roughness:.16,metalness:.92,envMap:envM,envMapIntensity:1.65});
+  let tiMat=new Z({color:10199220,roughness:.20,metalness:.92,emissive:2631750,emissiveIntensity:.18,envMap:envM,envMapIntensity:1.5});
+  let cageMat=new Z({color:14608108,roughness:.28,metalness:.78,envMap:envM,envMapIntensity:1.1});
   let seatMat=new Z({color:1447964,roughness:.92,metalness:.04});
-  let f=new Z({color:1187624,roughness:.06,metalness:.82,transparent:!0,opacity:.34,side:2});
-  let pL=new Z({color:16580351,emissive:15660799,emissiveIntensity:2.6,roughness:.1});
-  let pR=new Z({color:16580351,emissive:15660799,emissiveIntensity:2.6,roughness:.1});
-  let podLampM=new Z({color:16776186,emissive:16773848,emissiveIntensity:2.8,roughness:.1});
-  let m=new Z({color:12521988,emissive:16719390,emissiveIntensity:.85,roughness:.18});
+  let f=new Z({color:1187624,roughness:.04,metalness:.88,transparent:!0,opacity:.36,envMap:envM,envMapIntensity:1.95,side:2});
+  let lensGlassM=new Z({color:13821439,roughness:.04,metalness:.85,transparent:!0,opacity:.32,envMap:envM,envMapIntensity:1.8});
+  let pL=new Z({color:16580351,emissive:15660799,emissiveIntensity:2.8,roughness:.08});
+  let pR=new Z({color:16580351,emissive:15660799,emissiveIntensity:2.8,roughness:.08});
+  let podLampM=new Z({color:16776186,emissive:16773848,emissiveIntensity:2.8,roughness:.08});
+  let m=new Z({color:13505028,emissive:16719390,emissiveIntensity:.95,roughness:.14});
   let rainLedM=new Z({color:14423100,emissive:16711680,emissiveIntensity:.4,roughness:.2});
-  let h=new Z({color:n.wheelHex,roughness:.22,metalness:.74,side:2});
-  let calipM=new Z({color:n.baseHex===13902376?16498468:14753096,roughness:.26,metalness:.55});
-  let springM=new Z({color:n.accentHex,roughness:.32,metalness:.45});
-  let tireM=new Z({map:shT.tread,roughness:.9,metalness:.04,color:15790320});
-  let sideWallM=new Z({map:shT.sidewall,roughness:.86,metalness:.04,color:16448250,transparent:!0,alphaTest:.4,side:2});
-  let discMat=new Z({map:shT.brakeDisc,roughness:.28,metalness:.84,emissive:16724736,emissiveIntensity:0});
-  let v=new Z({map:xf(!1,n),roughness:.18,metalness:.46});
-  let y=new Z({map:xf(!0,n),roughness:.18,metalness:.46});
-  let b=new Z({map:Sf(n),roughness:.17,metalness:.50});
-  let x=new Z({map:Cf(n),roughness:.22,metalness:.22});
-  let wingTopM=new Z({map:mkWingTopTex(n),roughness:.22,metalness:.42});
+  let h=new Z({color:n.wheelHex,roughness:.20,metalness:.78,envMap:envM,envMapIntensity:1.45,side:2});
+  let calipM=new Z({color:n.baseHex===13902376?16498468:14753096,roughness:.22,metalness:.55,envMap:envM,envMapIntensity:1.1});
+  let springM=new Z({color:n.accentHex,roughness:.28,metalness:.45});
+  let tireM=new Z({map:shT.tread,roughness:.88,metalness:.05,color:15790320});
+  let sideWallM=new Z({map:shT.sidewall,roughness:.84,metalness:.05,color:16448250,transparent:!0,alphaTest:.4,side:2});
+  let discMat=new Z({map:shT.brakeDisc,roughness:.24,metalness:.86,emissive:16724736,emissiveIntensity:0,envMap:envM,envMapIntensity:1.2});
+  let v=new Z({map:xf(!1,n),roughness:.14,metalness:.42,envMap:envM,envMapIntensity:1.3,polygonOffset:!0,polygonOffsetFactor:-1});
+  let y=new Z({map:xf(!0,n),roughness:.14,metalness:.42,envMap:envM,envMapIntensity:1.3,polygonOffset:!0,polygonOffsetFactor:-1});
+  let b=new Z({map:Sf(n),roughness:.14,metalness:.44,envMap:envM,envMapIntensity:1.35,side:2});
+  let x=new Z({map:Cf(n),roughness:.20,metalness:.22,side:2});
+  let wingTopM=new Z({map:mkWingTopTex(n),roughness:.18,metalness:.42,envMap:envM,envMapIntensity:1.1});
 
   // Real-time Mesh Deformation Registry
   let deformables=[];
@@ -5759,197 +6072,164 @@ function Of(e,t={}){
     return mesh;
   }
 
-  // 1. Subdivided Sculpted WRC Rally1 Lower & Main Chassis Core
-  let coreGeo=new Y(1.86,.56,4.28,12,6,20),cPos=coreGeo.attributes.position;
-  for(let k=0;k<cPos.count;k++){
-    let vx=cPos.getX(k),vy=cPos.getY(k),vz=cPos.getZ(k);
-    // Taper nose downward & sleekly inward, slight rear fastback rise
-    if(vz<-1.15){
-      let nf=Math.min(1,(-1.15-vz)/.99);
-      vy-=nf*nf*(vy>0?.21:.04);
-      vx*=1-nf*nf*.09;
-    }
-    if(vz>1.45){
-      let rf=Math.min(1,(vz-1.45)/.69);
-      vy+=rf*(vy<0?.11:.02);
-      vx*=1-rf*rf*.06;
-    }
-    // Slight tumblehome curve on upper sides
-    if(vy>.08)vx*=1-(vy-.08)*.16;
-    cPos.setXYZ(k,vx,vy,vz);
+  // 1. CONTINUOUS SMOOTH SCULPTED WRC UNIBODY SHELL (GTA-quality curved lofted mesh!)
+  let S=new J(buildSculptedUnibody(),o);S.castShadow=!0;S.receiveShadow=!0;i.add(regDeform(S,.28,!0));
+
+  // Curved Door Livery Skins (RobotMaker + #5 wrapped 100% flush onto curved door contour!)
+  let w=new J(buildCurvedDoorLivery(-1),v);i.add(regDeform(w,.26,!0));
+  let T=new J(buildCurvedDoorLivery(1),y);i.add(regDeform(T,.26,!0));
+
+  // Sleek Carbon Side Rocker Aero Skirts + Aluminum Front Skidplate
+  for(let sx of [-1,1]){
+    let sk=new J(new Y(.12,.045,1.62,2,1,8),carbonM);sk.position.set(sx*.94,.265,-.03);sk.castShadow=!0;i.add(regDeform(sk,.14,!1));
   }
-  coreGeo.computeVertexNormals();
-  let S=new J(coreGeo,o);S.position.set(0,.61,0);S.castShadow=!0;S.receiveShadow=!0;i.add(regDeform(S,.28,!0));
+  let O=new J(new Y(1.14,.045,.66),d);O.position.set(0,.25,-1.88);O.rotation.x=.22;i.add(O);
 
-  // Subdivided Left & Right Livery Flank Panels (RobotMaker branding + dents!)
-  let flkGeo=new ko(3.26,.54,16,5);
-  let w=new J(flkGeo.clone(),v);w.position.set(-.942,.63,.02);w.rotation.y=-Math.PI/2;i.add(regDeform(w,.24,!0));
-  let T=new J(flkGeo.clone(),y);T.position.set(.942,.63,.02);T.rotation.y=Math.PI/2;i.add(regDeform(T,.24,!0));
-
-  // Carbon Lower Side Skirts & Undertray Skidplate
-  let E=new J(new Y(1.98,.08,2.38,6,2,10),carbonM);E.position.set(0,.285,-.02);E.castShadow=!0;i.add(regDeform(E,.14,!1));
-  let O=new J(new Y(1.24,.055,.68),d);O.position.set(0,.26,-1.92);O.rotation.x=.22;i.add(O);
-
-  // 2. Front Bumper & Aggressive WRC Aero Group (tilts slightly when heavily damaged)
+  // 2. CURVED AERODYNAMIC FRONT FASCIA, ELLIPTICAL CARBON SPLITTER & FLUSH ANGRY-EYE LED HEADLIGHTS
   let fBumpG=new K;i.add(fBumpG);
-  let fbGeo=new Y(1.94,.36,.36,12,4,4);
-  let fbMesh=new J(fbGeo,o);fbMesh.position.set(0,.46,-2.12);fbMesh.castShadow=!0;fBumpG.add(regDeform(fbMesh,.28,!1));
-  // Carbon Front Splitter + Tie-rods + Side Aero Canards
-  let D=new J(new Y(2.04,.055,.42,10,1,3),carbonM);D.position.set(0,.265,-2.16);D.castShadow=!0;fBumpG.add(regDeform(D,.22,!1));
-  for(let sx of [-.52,.52]){
-    let rod=new J(new X(.012,.012,.22,6),d);rod.position.set(sx,.36,-2.28);rod.rotation.x=-.28;fBumpG.add(rod);
+  // Elliptical Curved Carbon Front Splitter + Twin Metallic Tie-Rods + Swept Carbon Canards
+  let D=new J(buildCurvedSplitter(),carbonM);D.position.set(0,.275,-1.76);D.castShadow=!0;fBumpG.add(regDeform(D,.20,!1));
+  for(let sx of [-.44,.44]){
+    let rod=new J(new X(.010,.010,.20,6),d);rod.position.set(sx,.36,-2.22);rod.rotation.x=-.26;fBumpG.add(rod);
   }
   for(let sx of [-1,1]){
-    for(let cy of [.38,.52]){
-      let can=new J(new Y(.18,.025,.28),carbonM);can.position.set(sx*1.01,cy,-2.06);can.rotation.z=sx*.24;can.rotation.y=-sx*.28;fBumpG.add(can);
-    }
+    let can=new J(buildAirfoilWing(.22,.28,.024),carbonM);
+    can.position.set(sx*.92,.43,-1.96);can.rotation.y=-sx*.45;can.rotation.z=sx*.22;fBumpG.add(can);
   }
-  // Recessed Radiator Grille + Silver Intercooler Core + Red Tow Hook
-  let F=new J(new Y(.96,.2,.1),u);F.position.set(0,.62,-2.26);fBumpG.add(F);
-  let I=new J(new Y(1.36,.22,.1),u);I.position.set(0,.41,-2.28);fBumpG.add(I);
-  let icCore=new J(new Y(1.06,.17,.06),d);icCore.position.set(0,.41,-2.24);fBumpG.add(icCore);
-  let towRing=new J(new Po(.052,.014,8,14),new Z({color:15548997,roughness:.3,metalness:.5}));
-  towRing.rotation.x=Math.PI*.5;towRing.position.set(.56,.34,-2.34);fBumpG.add(towRing);
-  // Angular WRC LED Headlights + DRL Blades (Split L/R for damage flicker)
+  // Curved Aggressive Motorsport Front Grille + Finned Aluminum Intercooler + Red Tow Loop
+  let grCurve=buildCurvedGlass(-2.20,.31,.56,-2.13,.56,.52,-.11,14,4,!1);
+  let grMesh=new J(grCurve,u);fBumpG.add(grMesh);
+  let icCore=new J(new Y(.86,.18,.06),d);icCore.position.set(0,.41,-2.22);fBumpG.add(icCore);
+  for(let fy of [.35,.41,.47]){
+    let rib=new J(new Y(.88,.016,.07),l);rib.position.set(0,fy,-2.23);fBumpG.add(rib);
+  }
+  let towRing=new J(new Po(.048,.013,8,16),new Z({color:15548997,roughness:.24,metalness:.55}));
+  towRing.rotation.x=Math.PI*.5;towRing.position.set(.50,.34,-2.24);fBumpG.add(towRing);
+
+  // Flush Wrap-Around Angry-Eye LED Headlights (facing FORWARD -Z with glowing DRL blades & twin chrome projectors!)
   for(let sx of [-1,1]){
     let hMat=sx<0?pL:pR;
-    let hHs=new J(new Y(.48,.16,.2),l);hHs.position.set(sx*.71,.69,-2.12);hHs.rotation.y=-sx*.26;fBumpG.add(hHs);
-    let hLed=new J(new Y(.42,.055,.06),hMat);hLed.position.set(sx*.72,.73,-2.21);hLed.rotation.y=-sx*.26;fBumpG.add(hLed);
-    let hProj=new J(new X(.055,.055,.06,12),hMat);hProj.rotation.x=Math.PI/2;hProj.position.set(sx*.68,.655,-2.21);fBumpG.add(hProj);
-    let hFog=new J(new X(.06,.06,.05,12),hMat);hFog.rotation.x=Math.PI/2;hFog.position.set(sx*.78,.42,-2.26);fBumpG.add(hFog);
+    let hG=new K;hG.position.set(sx*.64,.69,-1.96);hG.rotation.y=-sx*.36;hG.rotation.x=.12;fBumpG.add(hG);
+    let hBk=new J(new No(.21,14,10),l);hBk.scale.set(1.18,.34,.42);hG.add(hBk);
+    // Sharp swept glowing LED eyebrow DRL signature facing forward (-Z)!
+    let drl=new J(buildCurvedPillar([[-.20,.032,-.075],[0,.020,-.098],[.20,.048,-.062]],.016),hMat);hG.add(drl);
+    // Twin round chrome projector lenses facing forward (-Z)!
+    for(let px of [-.075,.085]){
+      let bz=new J(new Po(.040,.009,8,14),d);bz.position.set(px,-.008,-.088);hG.add(bz);
+      let pr=new J(new No(.034,10,8),hMat);pr.scale.set(1,1,.45);pr.position.set(px,-.008,-.085);hG.add(pr);
+    }
+    // Sleek transparent flush headlight glass cover
+    let hCov=new J(new No(.22,14,10),lensGlassM);hCov.scale.set(1.22,.37,.46);hCov.position.z=-.012;hG.add(hCov);
+    // Recessed round bumper fog lamp
+    let fBz=new J(new Po(.048,.012,8,14),carbonM);fBz.position.set(sx*.66,.43,-2.10);fBz.rotation.y=-sx*.36;fBumpG.add(fBz);
+    let fLm=new J(new X(.042,.042,.03,14),hMat);fLm.rotation.x=Math.PI/2;fLm.position.set(sx*.66,.43,-2.10);fLm.rotation.y=-sx*.36;fBumpG.add(fLm);
   }
 
-  // 3. Subdivided Sculpted Hood Group (Flush RobotMaker logo + Carbon vents + 4er WRC LED Light Pod!)
-  let hoodG=new K;hoodG.position.set(0,.90,-.82);i.add(hoodG);
-  let hoodGeo=new ko(1.56,1.22,14,12),hPos=hoodGeo.attributes.position;
-  for(let k=0;k<hPos.count;k++){
-    let hx=hPos.getX(k),hy=hPos.getY(k);
-    let arch=Math.cos(hx/1.56*Math.PI)*.032;
-    let drop=Math.max(0,(-hy-.08)/.55)**1.5*.15;
-    hPos.setZ(k,arch-drop);
-  }
-  hoodGeo.computeVertexNormals();
-  let kH=new J(hoodGeo,b);kH.position.set(0,-.02,-.62);kH.rotation.x=-Math.PI/2+.16;kH.castShadow=!0;hoodG.add(regDeform(kH,.26,!1));
-  // Central Carbon Power Dome & Flush Twin Heat-Extractor Louvers
-  let dome=new J(new Y(.48,.055,.64,6,2,6),carbonM);dome.position.set(0,-.01,-.52);dome.rotation.x=.16;hoodG.add(regDeform(dome,.15,!1));
-  for(let sx of [-.50,.50]){
-    let lv=new J(new Y(.24,.025,.40),carbonM);lv.position.set(sx,-.015,-.44);lv.rotation.x=.16;hoodG.add(lv);
+  // 3. CURVED SCULPTED WRC HOOD + ORGANIC TEARDROP 4-LAMP CARBON RALLY LIGHT POD!
+  let hoodG=new K;hoodG.position.set(0,0,0);i.add(hoodG);
+  let kH=new J(buildSculptedHood(),b);kH.castShadow=!0;kH.receiveShadow=!0;hoodG.add(regDeform(kH,.26,!1));
+  // Flush contoured carbon hood extractor louvers
+  for(let sx of [-.44,.44]){
+    let lv=new J(new Y(.24,.022,.36),carbonM);lv.position.set(sx,.915,-1.28);lv.rotation.x=.16;lv.rotation.z=-sx*.08;hoodG.add(lv);
     for(let sl=0;sl<3;sl++){
-      let fin=new J(new Y(.20,.014,.035),u);fin.position.set(sx,-.002,-.34-sl*.11);fin.rotation.x=.48;hoodG.add(fin);
+      let fin=new J(new Y(.20,.012,.03),u);fin.position.set(sx,.928-sl*.015,-1.18-sl*.10);fin.rotation.x=.46;hoodG.add(fin);
     }
   }
-  // 4-Lamp Carbon WRC Rally Light Pod seated cleanly on nose slope of hood
-  let lightPodG=new K;lightPodG.position.set(0,-.12,-1.16);hoodG.add(lightPodG);
-  let podShell=new J(new Y(.96,.13,.24,6,2,2),carbonM);podShell.castShadow=!0;lightPodG.add(podShell);
+  // Aerodynamic Sculpted Oval Carbon 4-Lamp Rally Light Pod (curved fairing, NOT a square block!)
+  let lightPodG=new K;lightPodG.position.set(0,.805,-1.84);lightPodG.rotation.x=.16;hoodG.add(lightPodG);
+  let podFairing=new J(new No(.46,18,12),carbonM);podFairing.scale.set(1.18,.24,.44);podFairing.castShadow=!0;lightPodG.add(podFairing);
   let podLamps=[];
-  for(let lx of [-.34,-.115,.115,.34]){
-    let rim=new J(new X(.096,.106,.12,14),l);rim.rotation.x=Math.PI/2;rim.position.set(lx,.01,-.10);lightPodG.add(rim);
-    let lens=new J(new X(.080,.080,.035,14),podLampM);lens.rotation.x=Math.PI/2;lens.position.set(lx,.01,-.155);lightPodG.add(lens);
+  for(let k=0;k<4;k++){
+    let lx=-.315+k*.21,lz=-.12-Math.cos((k-1.5)*.65)*.05;
+    let bezel=new J(new Po(.082,.015,8,16),d);bezel.position.set(lx,.015,lz-.04);lightPodG.add(bezel);
+    let cup=new J(new X(.078,.092,.12,14),carbonM);cup.rotation.x=Math.PI/2;cup.position.set(lx,.015,lz+.01);lightPodG.add(cup);
+    let lens=new J(new No(.074,12,8),podLampM);lens.scale.set(1,1,.32);lens.position.set(lx,.015,lz-.042);lightPodG.add(lens);
     podLamps.push(lens);
   }
 
-  // 4. Sculpted WRC Widebody Arched Fenders (4x) with Curved Half-Torus Carbon Lips & Wheel Cutouts!
+  // 4. CURVED CARBON WIDEBODY WHEEL-ARCH LIPS, AERO VENTS & RALLY MUDFLAPS (4x)
   let ne=[{name:`FL`,x:-.96,z:-1.34,front:!0},{name:`FR`,x:.96,z:-1.34,front:!0},{name:`RL`,x:-.96,z:1.28,front:!1},{name:`RR`,x:.96,z:1.28,front:!1}];
-  // True curved wheel-arch lip wrapping OVER the top of each tire!
-  let archGeo=new Po(.495,.046,10,24,Math.PI);archGeo.rotateY(Math.PI/2);
-  let flapGeo=new Y(.36,.28,.032);
+  let archGeo=new Po(.492,.042,10,28,Math.PI);archGeo.rotateY(Math.PI/2);
+  let flapGeo=new Y(.34,.26,.028);
   for(let wDef of ne){
     let sgn=wDef.x>0?1:-1;
-    // Sculpted WRC Widebody Blister with Real Circular Wheel-Well Arch Cutout!
-    let fGeo=new Y(.24,.46,1.22,4,6,14),fp=fGeo.attributes.position;
-    for(let k=0;k<fp.count;k++){
-      let fx=fp.getX(k),fy=fp.getY(k),fz=fp.getZ(k);
-      // Taper top smoothly inward into body shoulder
-      if(fy>.06)fx*=1-(fy-.06)*1.4;
-      // Carve circular wheel-well opening centered at (fy = -0.25, fz = 0) with radius 0.48
-      let wy=fy+.24,rW=Math.hypot(fz,wy);
-      if(rW<.495&&Math.abs(fz)<.49){
-        let targetY=Math.sqrt(Math.max(0,.495*.495-fz*fz))-.24;
-        if(fy<targetY)fy=Math.min(.22,targetY);
-      }
-      fp.setXYZ(k,fx,fy,fz);
-    }
-    fGeo.computeVertexNormals();
-    let fMesh=new J(fGeo,o);fMesh.position.set(sgn*.97,.66,wDef.z);fMesh.castShadow=!0;fMesh.receiveShadow=!0;i.add(regDeform(fMesh,.24,!0));
-    // Curved Carbon Wheel Arch Lip framing top half of wheel cleanly!
-    let lip=new J(archGeo,carbonM);lip.position.set(sgn*1.02,.42,wDef.z);i.add(lip);
-    // Front fender trailing aero extractor vent / rear brake cooling intake duct
-    let vent=new J(new Y(.11,.30,.12),u);
-    vent.position.set(sgn*1.01,.56,wDef.front?wDef.z+.58:wDef.z-.58);i.add(vent);
-    let louver=new J(new Y(.13,.035,.14),carbonM);
-    louver.position.set(sgn*1.02,.65,wDef.front?wDef.z+.58:wDef.z-.58);i.add(louver);
-    // Rally Mudflap
-    let flap=new J(flapGeo,s);flap.position.set(wDef.x*.96,.25,wDef.z+.50);flap.rotation.x=.10;i.add(flap);
+    let lip=new J(archGeo,carbonM);lip.position.set(sgn*(wDef.front?1.005:1.02),.42,wDef.z);i.add(lip);
+    // Sculpted Rally Mudflap
+    let flap=new J(flapGeo,s);flap.position.set(wDef.x*.94,.24,wDef.z+.49);flap.rotation.x=.12;i.add(flap);
   }
 
-  // 5. Rear Fascia, Full-Width LED Tail Bar, FIA Rain Light, Carbon Diffuser & Titanium Backfire Exhaust
+  // 5. CURVED WRAP-AROUND REAR FASCIA, SLEEK LED TAIL BAR, CARBON DIFFUSER & TITANIUM BACKFIRE EXHAUST
   let rBumpG=new K;i.add(rBumpG);
-  let rbMesh=new J(new Y(1.92,.44,.26,12,4,3),o);rbMesh.position.set(0,.58,2.08);rbMesh.castShadow=!0;rBumpG.add(regDeform(rbMesh,.26,!1));
-  // Full-width WRC LED tail light bar + corner C-blades
-  let tailBar=new J(new Y(1.66,.065,.06),m);tailBar.position.set(0,.78,2.20);rBumpG.add(tailBar);
+  // Curved Wrap-Around LED Tail Light Bar + Sculpted Corner C-Signatures
+  let tailBar=new J(buildCurvedGlass(2.11,.78,.74,2.10,.86,.72,.08,16,3,!0),m);rBumpG.add(tailBar);
   for(let sx of [-1,1]){
-    let tl=new J(new Y(.44,.16,.08),m);tl.position.set(sx*.68,.75,2.19);tl.rotation.y=sx*.12;rBumpG.add(tl);
-    let revL=new J(new Y(.14,.05,.07),pL);revL.position.set(sx*.48,.71,2.20);rBumpG.add(revL);
+    let tH=new J(new No(.18,12,8),l);tH.scale.set(1.2,.52,.35);tH.position.set(sx*.64,.82,2.10);tH.rotation.y=sx*.28;rBumpG.add(tH);
+    let tSig=new J(buildCurvedPillar([[-.18,.04,.06],[.12,.04,.08],[.15,-.04,.06],[-.16,-.04,.05]],.018),m);
+    tSig.position.set(sx*.64,.82,2.08);tSig.rotation.y=sx*.28;rBumpG.add(tSig);
+    let revL=new J(new Y(.14,.035,.04),pL);revL.position.set(sx*.52,.76,2.14);rBumpG.add(revL);
   }
   // Central FIA Rain Light
-  let rainLed=new J(new Y(.11,.13,.06),rainLedM);rainLed.position.set(0,.44,2.21);rBumpG.add(rainLed);
-  // Carbon Multi-Fin Rear Diffuser
-  let L=new J(new Y(1.76,.22,.26,8,2,2),carbonM);L.position.set(0,.34,2.09);rBumpG.add(regDeform(L,.16,!1));
-  for(let fx of [-.66,-.38,-.14,.14,.38,.66]){
-    let fin=new J(new Y(.032,.19,.30),carbonM);fin.position.set(fx,.31,2.14);rBumpG.add(fin);
+  let rainLed=new J(new Y(.095,.12,.05),rainLedM);rainLed.position.set(0,.44,2.15);rBumpG.add(rainLed);
+  // Sculpted Recessed Carbon Rear Diffuser + 6 Contoured Strakes
+  let diffShell=new J(buildCurvedGlass(2.10,.28,.72,2.14,.46,.76,.06,14,3,!0),carbonM);rBumpG.add(regDeform(diffShell,.14,!1));
+  for(let fx of [-.62,-.38,-.15,.15,.38,.62]){
+    let fin=new J(buildAirfoilWing(.20,.26,.024),carbonM);fin.rotation.z=Math.PI/2;fin.position.set(fx,.34,2.10);rBumpG.add(fin);
   }
-  // Burnt-Titanium Exhaust Tip + Animated Multi-Layer Backfire Flame Cones
-  let te=new J(new X(.078,.088,.36,14),tiMat);te.rotation.x=Math.PI/2;te.position.set(.48,.34,2.24);rBumpG.add(te);
-  let exInner=new J(new X(.062,.062,.08,12),u);exInner.rotation.x=Math.PI/2;exInner.position.set(.48,.34,2.40);rBumpG.add(exInner);
-  let backfireG=new K;backfireG.position.set(.48,.34,2.42);backfireG.visible=!1;rBumpG.add(backfireG);
+  // Burnt-Titanium Exhaust Tip + Animated Multi-Layer Blue/Orange Backfire Flame Cones
+  let te=new J(new X(.072,.082,.34,16),tiMat);te.rotation.x=Math.PI/2;te.position.set(.46,.34,2.18);rBumpG.add(te);
+  let exInner=new J(new X(.058,.058,.08,14),u);exInner.rotation.x=Math.PI/2;exInner.position.set(.46,.34,2.33);rBumpG.add(exInner);
+  let backfireG=new K;backfireG.position.set(.46,.34,2.36);backfireG.visible=!1;rBumpG.add(backfireG);
   let bfOuterM=new oi({color:16747520,transparent:!0,opacity:.86,depthWrite:!1});
   let bfCoreM=new oi({color:8969983,transparent:!0,opacity:.96,depthWrite:!1});
-  let bfOuter=new J(new ca(.11,.82,10),bfOuterM);bfOuter.rotation.x=Math.PI/2;bfOuter.position.z=.40;backfireG.add(bfOuter);
-  let bfCore=new J(new ca(.062,.52,10),bfCoreM);bfCore.rotation.x=Math.PI/2;bfCore.position.z=.26;backfireG.add(bfCore);
+  let bfOuter=new J(new ca(.088,.76,12),bfOuterM);bfOuter.rotation.x=Math.PI/2;bfOuter.position.z=.38;backfireG.add(bfOuter);
+  let bfCore=new J(new ca(.052,.48,12),bfCoreM);bfCore.rotation.x=Math.PI/2;bfCore.position.z=.24;backfireG.add(bfCore);
   let bfLight=new Rs(16750848,0,6.5,2);bfLight.position.set(0,.05,.25);backfireG.add(bfLight);
 
-  // 6. Real Hollow WRC Cabin Frame (Sculpted Roof + Slim Pillars + Clear Tinted Glass showing Roll Cage & Seats!)
+  // 6. CURVED WRAP-AROUND GREENHOUSE (Domed Roof + Swept Curved Pillars + Curved Glass + Teardrop Scoop & Mirrors!)
   let ae=new K;i.add(ae);
-  // Sculpted subdivided metallic roof panel
-  let roofGeo=new Y(1.42,.065,1.16,8,2,8),rP=roofGeo.attributes.position;
-  for(let k=0;k<rP.count;k++){
-    let rx=rP.getX(k),ry=rP.getY(k),rz=rP.getZ(k);
-    let crown=Math.cos(rx/1.42*Math.PI)*.032+Math.cos(rz/1.16*Math.PI)*.018;
-    rP.setY(k,ry+crown);
-  }
-  roofGeo.computeVertexNormals();
-  let R=new J(roofGeo,o);R.position.set(0,1.45,.28);R.castShadow=!0;ae.add(regDeform(R,.16,!1));
-  // Slim painted A/B/C pillars & upper window headers
+  // Double-curved sculpted aerodynamic roof
+  let R=new J(buildCurvedRoof(),o);R.castShadow=!0;R.receiveShadow=!0;ae.add(regDeform(R,.16,!1));
+  // Smooth swept curved A-pillars, sleek black B-pillars, sculpted fastback C-pillars & curved roof cant rails!
   for(let sx of [-1,1]){
-    let ap=new J(new Y(.062,.062,.82),o);ap.position.set(sx*.72,1.20,-.54);ap.rotation.x=-.71;ap.rotation.z=-sx*.08;ap.castShadow=!0;ae.add(ap);
-    let bp=new J(new Y(.055,.52,.075),u);bp.position.set(sx*.73,1.18,.34);bp.rotation.z=sx*.11;ae.add(bp);
-    let cp=new J(new Y(.082,.082,.88),o);cp.position.set(sx*.72,1.21,1.17);cp.rotation.x=.67;cp.rotation.z=-sx*.08;cp.castShadow=!0;ae.add(cp);
-    let hdr=new J(new Y(.055,.055,1.16),o);hdr.position.set(sx*.70,1.44,.28);ae.add(hdr);
+    let ap=new J(buildCurvedPillar([[sx*.74,.93,-.84],[sx*.69,1.21,-.55],[sx*.62,1.435,-.24]],.036),o);ap.castShadow=!0;ae.add(ap);
+    let rail=new J(buildCurvedPillar([[sx*.62,1.435,-.24],[sx*.61,1.47,.32],[sx*.60,1.435,.88]],.034),o);rail.castShadow=!0;ae.add(rail);
+    let bp=new J(buildCurvedPillar([[sx*.73,.95,.30],[sx*.68,1.21,.31],[sx*.62,1.45,.32]],.026),u);ae.add(bp);
+    let cp=new J(buildCurvedPillar([[sx*.60,1.435,.88],[sx*.68,1.22,1.20],[sx*.75,.98,1.52]],.046),o);cp.castShadow=!0;ae.add(cp);
   }
-  // Front roof crossbar (inside ae so 1st-person cockpit horizon stays 100% unobstructed!)
-  let cTop=new J(new X(.02,.02,1.28,8),cageMat);cTop.rotation.z=Math.PI/2;cTop.position.set(0,1.41,-.22);ae.add(cTop);
-  // Crystal-clear dark-tinted automotive glass (roll cage, bucket seats & WRC dash visible through!)
-  let oe=new J(new ko(1.36,.82),f);oe.position.set(0,1.20,-.56);oe.rotation.x=-.84;ae.add(oe);
-  let se=new J(new ko(1.34,.18),x);se.position.set(0,1.39,-.35);se.rotation.x=-.84;ae.add(se);
-  let ce=new J(new ko(1.32,.84),f);ce.position.set(0,1.21,1.19);ce.rotation.x=.90;ce.rotation.y=Math.PI;ae.add(ce);
-  let le=new Va;le.moveTo(-.78,.94);le.lineTo(-.24,1.42);le.lineTo(.82,1.42);le.lineTo(1.38,.96);le.closePath();
-  let ue=new jo(le),de=new J(ue,f);de.rotation.y=-Math.PI/2;de.position.x=-.73;
-  let fe=new J(ue,f);fe.rotation.y=Math.PI/2;fe.position.x=.73;ae.add(de,fe);
-  // Carbon Roof Air Scoop + Dual Rally Whip Antennas
-  let pe=new J(new Y(.34,.10,.48,4,2,4),carbonM);pe.position.set(0,1.53,-.04);ae.add(pe);
-  let scoopIn=new J(new Y(.26,.06,.06),u);scoopIn.position.set(0,1.52,-.27);ae.add(scoopIn);
-  for(let ax of [-.24,.24]){
-    let ant=new J(new X(.007,.011,.56,6),l);ant.position.set(ax,1.74,.44);ant.rotation.x=.24;ae.add(ant);
-  }
-  // Aerodynamic Carbon Side Mirrors on Stalks
+  // Front roof crossbar (inside ae so 1st-person cockpit horizon stays 100% panoramic!)
+  let cTop=new J(buildCurvedPillar([[-.61,1.425,-.24],[0,1.455,-.28],[.61,1.425,-.24]],.022),cageMat);ae.add(cTop);
+  // Curved Wrap-Around Windshield + RobotMaker Curved Sunstrip + Curved Rear Hatch Glass
+  let oe=new J(buildCurvedGlass(-.85,.94,.73,-.24,1.435,.62,-.075,16,10,!1),f);ae.add(oe);
+  let se=new J(buildCurvedGlass(-.39,1.31,.65,-.24,1.435,.62,-.078,14,3,!1),x);ae.add(se);
+  let ce=new J(buildCurvedGlass(1.50,.98,.73,.88,1.435,.60,.075,14,8,!0),f);ae.add(ce);
+  // Curved Tinted Side Windows following greenhouse tumblehome
   for(let sx of [-1,1]){
-    let stk=new J(new Y(.14,.035,.06),carbonM);stk.position.set(sx*.82,1.02,-.52);stk.rotation.z=sx*.22;ae.add(stk);
-    let mCap=new J(new Y(.20,.10,.15),carbonM);mCap.position.set(sx*.96,1.06,-.50);ae.add(mCap);
-    let mStr=new J(new Y(.18,.025,.12),c);mStr.position.set(sx*.96,1.11,-.50);ae.add(mStr);
+    let swV=[],swU=[],swI=[];
+    let ptsB=[[-.80,.95],[.30,.96],[1.44,.99]],ptsT=[[-.24,1.425],[.32,1.455],[.86,1.425]];
+    for(let k=0;k<3;k++){
+      swV.push(sx*.745,ptsB[k][1],ptsB[k][0],sx*.625,ptsT[k][1],ptsT[k][0]);
+      swU.push(k*.5,0,k*.5,1);
+    }
+    if(sx>0)swI.push(0,1,2,1,3,2,2,3,4,3,5,4);else swI.push(0,2,1,1,2,3,2,4,3,3,4,5);
+    let swG=new Or;swG.setAttribute(`position`,new q(swV,3));swG.setAttribute(`uv`,new q(swU,2));swG.setIndex(swI);swG.computeVertexNormals();
+    ae.add(new J(swG,f));
   }
-  // Windshield Crack Overlay (mounted on bodyGroup `i` so visible in BOTH 3rd-person & 1st-person!)
+  // Aerodynamic Sculpted Teardrop Carbon Roof Air Scoop + Dual Rally Whip Antennas
+  let scoopShell=new J(new No(.22,16,12),carbonM);scoopShell.scale.set(.86,.42,1.45);scoopShell.position.set(0,1.50,-.02);ae.add(scoopShell);
+  let scoopIn=new J(new X(.07,.07,.06,12),u);scoopIn.rotation.x=Math.PI/2;scoopIn.scale.set(1.6,.65,1);scoopIn.position.set(0,1.49,-.28);ae.add(scoopIn);
+  for(let ax of [-.20,.20]){
+    let ant=new J(new X(.006,.010,.52,6),l);ant.position.set(ax,1.72,.44);ant.rotation.x=.26;ae.add(ant);
+  }
+  // Sculpted Teardrop Aero Carbon Side Mirrors on Swept Stalks (ZERO square mirror boxes!)
+  for(let sx of [-1,1]){
+    let stk=new J(buildCurvedPillar([[sx*.77,.96,-.56],[sx*.88,1.02,-.53],[sx*.96,1.05,-.51]],.018),carbonM);ae.add(stk);
+    let mCap=new J(new No(.095,14,10),carbonM);mCap.scale.set(1.28,.62,.92);mCap.position.set(sx*.98,1.06,-.50);ae.add(mCap);
+    let mStr=new J(new No(.088,12,8),c);mStr.scale.set(1.15,.22,.78);mStr.position.set(sx*.98,1.105,-.50);ae.add(mStr);
+  }
+  // Matching Curved Windshield Crack Overlay (visible in BOTH 3rd-person & 1st-person cockpit!)
   let crackMat=new oi({map:shT.crack1,transparent:!0,opacity:0,depthWrite:!1,side:2,polygonOffset:!0,polygonOffsetFactor:-2});
-  let crackMesh=new J(new ko(1.36,.78),crackMat);crackMesh.position.set(0,1.215,-.552);crackMesh.rotation.x=-.84;crackMesh.visible=!1;i.add(crackMesh);
+  let crackMesh=new J(buildCurvedGlass(-.855,.945,.72,-.245,1.43,.61,-.079,16,10,!1),crackMat);
+  crackMesh.visible=!1;i.add(crackMesh);
 
   // Seasonal Event Car Attachments (100% preserved!)
   let evHallG=new K,evXmasG=new K,evEastG=new K,evTexCache={base:{l:v.map,r:y.map,h:b.map}};
@@ -5993,74 +6273,74 @@ function Of(e,t={}){
   }
   ae.add(evHallG,evXmasG,evEastG);
 
-  // 7. Double-Plane WRC Rally1 Swan-Neck Rear Wing (deforms & tilts on rear hits!)
-  let he=new K;he.position.set(0,1.02,1.88);i.add(he);
-  let ge=new J(new Y(1.78,.055,.40,10,1,3),carbonM);ge.position.set(0,.52,0);ge.rotation.x=.16;ge.castShadow=!0;he.add(regDeform(ge,.18,!1));
-  let wingDecal=new J(new ko(1.66,.34),wingTopM);wingDecal.rotation.x=-Math.PI/2+.16;wingDecal.position.set(0,.555,0);he.add(wingDecal);
-  let _e=new J(new Y(1.68,.045,.28,8,1,2),o);_e.position.set(0,.26,.04);_e.rotation.x=.09;he.add(regDeform(_e,.14,!1));
+  // 7. TRUE NACA AIRFOIL WRC DOUBLE-PLANE SWAN-NECK REAR WING!
+  let he=new K;he.position.set(0,1.00,1.88);i.add(he);
+  let ge=new J(buildAirfoilWing(1.74,.38,.065),carbonM);ge.position.set(0,.48,0);ge.rotation.x=.14;ge.castShadow=!0;he.add(regDeform(ge,.18,!1));
+  let wingDecal=new J(new ko(1.62,.30),wingTopM);wingDecal.rotation.x=-Math.PI/2+.14;wingDecal.position.set(0,.522,0);he.add(wingDecal);
+  let _e=new J(buildAirfoilWing(1.60,.26,.042),o);_e.position.set(0,.24,.03);_e.rotation.x=.08;he.add(regDeform(_e,.14,!1));
+  // Sleek swept motorsport wing endplates (curved profile via ExtrudeGeometry!)
+  let epSh=new Va;epSh.moveTo(-.26,-.04);epSh.bezierCurveTo(-.24,.36,-.16,.58,.14,.58);epSh.lineTo(.26,.46);epSh.bezierCurveTo(.26,.20,.22,-.02,.10,-.08);epSh.closePath();
+  let epGeo=new Eo(epSh,{depth:.036,bevelEnabled:!0,bevelThickness:.008,bevelSize:.008,bevelSegments:2,steps:1});
+  epGeo.translate(0,0,-.018);epGeo.rotateY(-Math.PI/2);epGeo.computeVertexNormals();
   for(let sx of [-1,1]){
-    let epW=new J(new Y(.048,.62,.48),o);epW.position.set(sx*.89,.28,0);epW.castShadow=!0;he.add(epW);
-    let epA=new J(new Y(.056,.09,.40),c);epA.position.set(sx*.89,.48,0);he.add(epA);
+    let epW=new J(epGeo,o);epW.position.set(sx*.88,.02,0);epW.castShadow=!0;he.add(epW);
+    let epA=new J(new Y(.046,.07,.32),c);epA.position.set(sx*.88,.48,.02);he.add(epA);
   }
+  // Curved Swan-Neck Carbon Uprights
   for(let sx of [-.34,.34]){
-    let stW=new J(new Y(.038,.56,.30),carbonM);stW.position.set(sx,.26,-.02);stW.rotation.x=-.14;he.add(stW);
+    let stW=new J(buildCurvedPillar([[sx,0,-.14],[sx,.28,-.06],[sx,.51,-.16],[sx,.50,.02]],.022),carbonM);he.add(stW);
   }
 
-  // 8. Full WRC Rally1 Interior & 1st-Person Cockpit (Roll Cage, Bucket Seats, Carbon Dash, Shifter & Handbrake)
+  // 8. FULL WRC RALLY1 INTERIOR & 1ST-PERSON COCKPIT (Roll Cage, Bucket Seats, Carbon Dash, Shifter & Handbrake)
   let ve=new K;i.add(ve);
-  // A-Pillars + Full Steel Roll Cage (front bars, roof rail, B-hoop, rear diagonal X-brace)
-  let ye=new X(.032,.038,.86,8);
-  let be=new J(ye,u);be.position.set(-.76,1.22,-.53);be.rotation.x=.80;be.rotation.z=-.11;
-  let xe=new J(ye,u);xe.position.set(.76,1.22,-.53);xe.rotation.x=.80;xe.rotation.z=.11;ve.add(be,xe);
-  let cageBar=new X(.022,.022,.84,8);
-  let Ce=new J(cageBar,cageMat);Ce.position.set(-.71,1.21,-.48);Ce.rotation.x=.80;Ce.rotation.z=-.10;
-  let we=new J(cageBar,cageMat);we.position.set(.71,1.21,-.48);we.rotation.x=.80;we.rotation.z=.10;ve.add(Ce,we);
+  let cageBar=new X(.021,.021,.82,8);
+  let Ce=new J(cageBar,cageMat);Ce.position.set(-.68,1.19,-.48);Ce.rotation.x=.78;Ce.rotation.z=-.12;
+  let we=new J(cageBar,cageMat);we.position.set(.68,1.19,-.48);we.rotation.x=.78;we.rotation.z=.12;ve.add(Ce,we);
   // B-pillar hoop & rear X-brace
-  let bTop=new J(new X(.022,.022,1.26,8),cageMat);bTop.rotation.z=Math.PI/2;bTop.position.set(0,1.40,.58);ve.add(bTop);
-  for(let sx of [-.63,.63]){
-    let rRail=new J(new X(.02,.02,.82,8),cageMat);rRail.rotation.x=Math.PI/2;rRail.position.set(sx,1.40,.20);ve.add(rRail);
-    let bPost=new J(new X(.022,.022,.78,8),cageMat);bPost.position.set(sx,1.02,.58);ve.add(bPost);
-    let rDiag=new J(new X(.02,.02,.96,8),cageMat);rDiag.position.set(sx*.92,1.12,.92);rDiag.rotation.x=.72;ve.add(rDiag);
+  let bTop=new J(new X(.021,.021,1.18,8),cageMat);bTop.rotation.z=Math.PI/2;bTop.position.set(0,1.40,.54);ve.add(bTop);
+  for(let sx of [-.59,.59]){
+    let rRail=new J(new X(.019,.019,.80,8),cageMat);rRail.rotation.x=Math.PI/2;rRail.position.set(sx,1.40,.18);ve.add(rRail);
+    let bPost=new J(new X(.021,.021,.78,8),cageMat);bPost.position.set(sx,1.02,.54);ve.add(bPost);
+    let rDiag=new J(new X(.019,.019,.74,8),cageMat);rDiag.position.set(sx*.92,1.12,.88);rDiag.rotation.x=.74;ve.add(rDiag);
   }
   for(let dir of [-1,1]){
-    let xBar=new J(new X(.018,.018,1.38,8),cageMat);xBar.position.set(0,1.04,.64);xBar.rotation.z=dir*.98;ve.add(xBar);
+    let xBar=new J(new X(.017,.017,1.32,8),cageMat);xBar.position.set(0,1.02,.60);xBar.rotation.z=dir*.98;ve.add(xBar);
   }
-  // Twin Racing Bucket Seats + 4-Point Harnesses
-  for(let sx of [-.34,.34]){
-    let stB=new J(new Y(.44,.12,.48),seatMat);stB.position.set(sx,.58,.14);ve.add(stB);
-    let stBk=new J(new Y(.44,.64,.10),seatMat);stBk.position.set(sx,.92,.36);stBk.rotation.x=-.16;ve.add(stBk);
-    let stHd=new J(new Y(.28,.20,.10),seatMat);stHd.position.set(sx,1.28,.41);ve.add(stHd);
-    for(let bs of [-.20,.20]){
-      let bol=new J(new Y(.07,.54,.18),seatMat);bol.position.set(sx+bs,.88,.28);bol.rotation.x=-.16;ve.add(bol);
-      let harn=new J(new Y(.042,.48,.025),c);harn.position.set(sx+bs*.55,.94,.30);harn.rotation.x=-.16;ve.add(harn);
+  // Twin Sculpted Racing Bucket Seats + 4-Point Harnesses
+  for(let sx of [-.33,.33]){
+    let stB=new J(new Y(.42,.12,.46),seatMat);stB.position.set(sx,.56,.14);ve.add(stB);
+    let stBk=new J(new Y(.42,.64,.10),seatMat);stBk.position.set(sx,.90,.36);stBk.rotation.x=-.16;ve.add(stBk);
+    let stHd=new J(new No(.15,10,8),seatMat);stHd.scale.set(.95,1.1,.52);stHd.position.set(sx,1.26,.41);ve.add(stHd);
+    for(let bs of [-.19,.19]){
+      let bol=new J(new Y(.065,.54,.17),seatMat);bol.position.set(sx+bs,.86,.28);bol.rotation.x=-.16;ve.add(bol);
+      let harn=new J(new Y(.040,.48,.025),c);harn.position.set(sx+bs*.55,.92,.30);harn.rotation.x=-.16;ve.add(harn);
     }
   }
-  // Carbon Dashboard + Hooded WRC Telemetry Display + Sequential Shifter + Hydraulic Handbrake
-  let Te=new J(new Y(1.50,.24,.50),carbonM);Te.position.set(0,.88,-.58);ve.add(Te);
-  let Ee=new J(new Y(.48,.16,.24),carbonM);Ee.position.set(0,1.03,-.56);ve.add(Ee);
-  let De=Tf(),Oe=new J(new ko(.38,.13),new oi({map:De.tex}));Oe.position.set(0,1.03,-.435);Oe.rotation.x=-.18;ve.add(Oe);
-  // Center Console with Sequential Shifter & Animated Hydraulic Handbrake Lever
-  let cons=new J(new Y(.22,.22,.72),carbonM);cons.position.set(0,.68,-.18);ve.add(cons);
-  let shiftStick=new J(new X(.012,.014,.30,8),d);shiftStick.position.set(.06,.88,-.24);shiftStick.rotation.x=-.12;ve.add(shiftStick);
-  let shiftKnob=new J(new X(.022,.02,.06,8),c);shiftKnob.position.set(.06,1.03,-.26);ve.add(shiftKnob);
-  let hbPivot=new K;hbPivot.position.set(-.05,.79,-.14);ve.add(hbPivot);
+  // Sculpted Carbon Dashboard + Hooded WRC Telemetry Display + Sequential Shifter + Hydraulic Handbrake
+  let Te=new J(new Y(1.44,.22,.48),carbonM);Te.position.set(0,.87,-.58);ve.add(Te);
+  let Ee=new J(new Y(.46,.14,.24),carbonM);Ee.position.set(0,1.01,-.56);ve.add(Ee);
+  let De=Tf(),Oe=new J(new ko(.38,.13),new oi({map:De.tex}));Oe.position.set(0,1.01,-.435);Oe.rotation.x=-.18;ve.add(Oe);
+  let cons=new J(new Y(.22,.22,.72),carbonM);cons.position.set(0,.66,-.18);ve.add(cons);
+  let shiftStick=new J(new X(.012,.014,.30,8),d);shiftStick.position.set(.06,.86,-.24);shiftStick.rotation.x=-.12;ve.add(shiftStick);
+  let shiftKnob=new J(new No(.024,10,8),c);shiftKnob.position.set(.06,1.02,-.26);ve.add(shiftKnob);
+  let hbPivot=new K;hbPivot.position.set(-.05,.77,-.14);ve.add(hbPivot);
   let hbRod=new J(new X(.012,.014,.34,8),d);hbRod.position.set(0,.17,0);hbPivot.add(hbRod);
   let hbGrip=new J(new X(.022,.022,.10,8),calipM);hbGrip.position.set(0,.34,0);hbPivot.add(hbGrip);
-  // Flat-Bottom Motorsport Suede Steering Wheel with Shift Paddles
-  let ke=new K;ke.position.set(0,.96,-.31);ke.rotation.x=-.28;ve.add(ke);
-  let Ae=new J(new Po(.158,.022,10,24),u);ke.add(Ae);
-  let z=new J(new Y(.032,.048,.048),new oi({color:n.accentHex}));z.position.set(0,.158,0);ke.add(z);
-  let je=new J(new Y(.29,.036,.022),carbonM),Me=new J(new Y(.040,.14,.022),carbonM);Me.position.set(0,-.075,0);
-  let Ne=new J(new X(.050,.050,.038,12),o);Ne.rotation.x=Math.PI/2;ke.add(je,Me,Ne);
+  // Motorsport Suede Steering Wheel with Shift Paddles
+  let ke=new K;ke.position.set(0,.95,-.31);ke.rotation.x=-.28;ve.add(ke);
+  let Ae=new J(new Po(.156,.021,10,24),u);ke.add(Ae);
+  let z=new J(new Y(.030,.046,.046),new oi({color:n.accentHex}));z.position.set(0,.156,0);ke.add(z);
+  let je=new J(new Y(.28,.034,.022),carbonM),Me=new J(new Y(.038,.14,.022),carbonM);Me.position.set(0,-.075,0);
+  let Ne=new J(new X(.048,.048,.036,12),o);Ne.rotation.x=Math.PI/2;ke.add(je,Me,Ne);
   for(let sx of [-.11,.11]){
-    let pad=new J(new Y(.038,.085,.012),d);pad.position.set(sx,.02,-.025);ke.add(pad);
+    let pad=new J(new Y(.036,.082,.012),d);pad.position.set(sx,.02,-.025);ke.add(pad);
   }
 
   // Headlight Spotlights (Left & Right independently controlled!)
-  let B=new Is(16054527,65,98,Math.PI/4.0,.52,1.35);B.position.set(-.70,.76,-2.16);B.target.position.set(-.4,0,-24);i.add(B,B.target);
-  let Pe=new Is(16054527,65,98,Math.PI/4.0,.52,1.35);Pe.position.set(.70,.76,-2.16);Pe.target.position.set(.4,0,-24);i.add(Pe,Pe.target);
+  let B=new Is(16054527,65,98,Math.PI/4.0,.52,1.35);B.position.set(-.66,.70,-2.08);B.target.position.set(-.4,0,-24);i.add(B,B.target);
+  let Pe=new Is(16054527,65,98,Math.PI/4.0,.52,1.35);Pe.position.set(.66,.70,-2.08);Pe.target.position.set(.4,0,-24);i.add(Pe,Pe.target);
 
-  // 9. Ultra-Detailed Rally Wheels, Cross-Drilled Glowing Brakes & Visible Coilover Suspension (4x)
+  // 9. ULTRA-DETAILED RALLY WHEELS, OPEN 10-SPOKE CONCAVE RIMS, GLOWING CROSS-DRILLED BRAKES & COILOVER SUSPENSION
   let Fe=.41,V=.32,Ie=[];
   let tireCyl=new X(Fe,Fe,V*.88,28,1,!0);tireCyl.rotateZ(Math.PI/2);
   let sideDisc=new ko(Fe*2,Fe*2);sideDisc.rotateY(Math.PI/2);
@@ -6076,13 +6356,11 @@ function Of(e,t={}){
     let sgn=wDef.x>0?1:-1;
     let stG=new K;stG.position.set(wDef.x,Fe,wDef.z);r.add(stG);
     let spG=new K;stG.add(spG);
-    // Tire tread + twin sidewalls + rounded shoulders
     let tM=new J(tireCyl,tireM);tM.castShadow=!0;spG.add(tM);
     for(let sx of [-1,1]){
       let sw=new J(sideDisc,sideWallM);sw.position.x=sx*(V*.44);spG.add(sw);
       let sh=new J(shTorus,tireM);sh.position.x=sx*(V*.26);spG.add(sh);
     }
-    // 10-Spoke Concave Motorsport Rim + 5 Lug Bolts + Center Lock Cap
     let rb=new J(rimBarrel,h);spG.add(rb);
     let ri=new J(rimInner,l);spG.add(ri);
     let hn=new J(hubNutGeo,c);hn.position.x=sgn*.11;spG.add(hn);
@@ -6091,10 +6369,10 @@ function Of(e,t={}){
       let la=k/5*Math.PI*2;
       let lg=new J(lugGeo,d);lg.position.set(sgn*.165,Math.sin(la)*.095,Math.cos(la)*.095);spG.add(lg);
     }
-    // Stationary Cross-Drilled Brake Rotor + 6-Piston Colored Brake Caliper (inside steerGroup!)
+    // Stationary Cross-Drilled Glowing Brake Rotor + 6-Piston Colored Caliper
     let rotM=new J(rotorGeo,discMat);rotM.position.x=sgn*.03;stG.add(rotM);
     let cal=new J(new Y(.09,.20,.14),calipM);cal.position.set(sgn*.05,.04,wDef.front?-.15:.15);stG.add(cal);
-    // Visible Coilover Strut + Colored Spring + Lower Wishbone A-Arm (anchored to body, animates with wheel!)
+    // Visible Dynamic Coilover Strut & Wishbone Arm inside wheelhouse
     let suspTop=new K;suspTop.position.set(sgn*.68,.78,wDef.z);i.add(suspTop);
     let damper=new J(new X(.026,.026,.46,8),d);damper.position.set(sgn*.08,-.20,0);damper.rotation.z=sgn*.26;suspTop.add(damper);
     let coil=new J(new X(.062,.062,.28,10,6),springM);coil.position.set(sgn*.08,-.20,0);coil.rotation.z=sgn*.26;suspTop.add(coil);
@@ -6102,7 +6380,7 @@ function Of(e,t={}){
     Ie.push({name:wDef.name,localPos:new G(wDef.x,0,wDef.z),front:wDef.front,steerGroup:stG,spinGroup:spG,baseY:Fe,coil,arm,sgn});
   }
 
-  // 10. Dust Particle Pool (64) + Engine Smoke Particle Pool (24)
+  // 10. Dust & Engine Smoke Particle Pools
   let Ue=Ef(),We=new Mn(14261106),Ge=.44,Ke=[],qe=new K;e.add(qe);
   for(let k=0;k<64;k++){
     let sm=new zr({map:Ue,color:We.clone(),transparent:!0,opacity:0,depthWrite:!1}),sp=new $r(sm);
@@ -6133,19 +6411,18 @@ function Of(e,t={}){
     o2.sprite.position.copy(pos);o2.sprite.scale.set(o2.startSize,o2.startSize,1);o2.sprite.visible=!0;
   }
 
-  // Damage Visual State & Real-Time Vertex Deformation Engine
+  // Real-Time Vertex Mesh Deformation Engine (operates directly on the smooth curved unibody & hood!)
   let dmgVis={front:0,rear:0,left:0,right:0,engine:0};
   let baseLightInt=38,lightsEnabled=!0,podEnabled=!0,bfTimer=0,brakeHeatVis=0,hbPull=0,visTime=0;
-  let _invMat=new Zt,_tmpP=new G,_tmpD=new G,_hoodWorld=new G;
+  let _tmpP=new G,_tmpD=new G,_hoodWorld=new G;
 
   function applyDent(localPt,localDir,strength){
-    let rad=.62+Math.min(1.2,strength)*.68,amp=.09+Math.min(1.4,strength)*.18;
+    let rad=.65+Math.min(1.2,strength)*.68,amp=.095+Math.min(1.4,strength)*.18;
     let dLen=Math.hypot(localDir.x,localDir.y,localDir.z)||1;
     let dx=localDir.x/dLen,dy=localDir.y/dLen,dz=localDir.z/dLen;
     i.updateMatrixWorld(!0);
     for(let item of deformables){
       let m2=item.mesh;
-      // Convert localPt (in bodyGroup `i` space) into mesh-local space
       _tmpP.set(localPt.x-m2.position.x,localPt.y-m2.position.y,localPt.z-m2.position.z);
       if(m2.parent&&m2.parent!==i){
         _tmpP.x-=m2.parent.position.x;_tmpP.y-=m2.parent.position.y;_tmpP.z-=m2.parent.position.z;
@@ -6156,15 +6433,13 @@ function Of(e,t={}){
       let pos=item.pos,bp=item.basePos,dirty=!1,maxD=item.maxDisp;
       for(let k=0;k<pos.count;k++){
         let vx=pos.getX(k),vy=pos.getY(k),vz=pos.getZ(k);
-        let ddx=vx-_tmpP.x,ddy=vy-_tmpP.y,ddz=vz-_tmpP.z;
-        let dist=Math.hypot(ddx,ddy,ddz);
+        let dist=Math.hypot(vx-_tmpP.x,vy-_tmpP.y,vz-_tmpP.z);
         if(dist<rad){
           let w=(1-dist/rad);w=w*w;
           let crinkle=(Math.sin(vx*21+vz*17+vy*13)*.35+Math.cos(vx*13-vz*25)*.25)*amp*.28*w;
           let nx=vx+_tmpD.x*amp*w+crinkle*.6;
           let ny=vy+_tmpD.y*amp*w+Math.abs(crinkle)*.55;
           let nz=vz+_tmpD.z*amp*w+crinkle*.6;
-          // Clamp total displacement from basePos so panels never invert or clip interior/wheels
           let bx=bp[k*3],by=bp[k*3+1],bz=bp[k*3+2];
           let ox=nx-bx,oy=ny-by,oz=nz-bz,ol=Math.hypot(ox,oy,oz);
           if(ol>maxD){let sc=maxD/ol;nx=bx+ox*sc;ny=by+oy*sc;nz=bz+oz*sc;}
@@ -6179,14 +6454,12 @@ function Of(e,t={}){
     if(!dState)return;
     dmgVis.front=dState.front||0;dmgVis.rear=dState.rear||0;
     dmgVis.left=dState.left||0;dmgVis.right=dState.right||0;dmgVis.engine=dState.engine||0;
-    // Panel buckle / misalignment on heavy damage
     let fOver=Math.max(0,dmgVis.front-.35);
-    hoodG.rotation.x=fOver*.16;hoodG.rotation.z=(dmgVis.left-dmgVis.right)*.045;
-    fBumpG.position.y=-fOver*.075;fBumpG.rotation.z=(dmgVis.right-dmgVis.left)*.04;
+    hoodG.position.y=fOver*.055;hoodG.rotation.x=fOver*.11;hoodG.rotation.z=(dmgVis.left-dmgVis.right)*.035;
+    fBumpG.position.y=-fOver*.065;fBumpG.rotation.z=(dmgVis.right-dmgVis.left)*.035;
     let rOver=Math.max(0,dmgVis.rear-.40);
     he.rotation.z=(dmgVis.right-dmgVis.left)*.09*Math.min(1,rOver*2+.35);
     he.rotation.x=-rOver*.10;
-    // Windshield 2-stage crack overlay
     if(dmgVis.front>=.42){
       crackMesh.visible=!0;
       crackMat.map=dmgVis.front>=.72?shT.crack2:shT.crack1;
@@ -6201,7 +6474,8 @@ function Of(e,t={}){
       item.pos.needsUpdate=!0;
       item.geo.computeVertexNormals();
     }
-    hoodG.rotation.set(0,0,0);fBumpG.position.set(0,0,0);fBumpG.rotation.set(0,0,0);
+    hoodG.position.set(0,0,0);hoodG.rotation.set(0,0,0);
+    fBumpG.position.set(0,0,0);fBumpG.rotation.set(0,0,0);
     he.rotation.set(0,0,0);
     crackMesh.visible=!1;crackMat.opacity=0;
     dmgVis.front=dmgVis.rear=dmgVis.left=dmgVis.right=dmgVis.engine=0;
@@ -6209,28 +6483,23 @@ function Of(e,t={}){
     smokeAcc=0;
   }
 
-  // High-Res WRC Cockpit Telemetry Dashboard (RPM LEDs + Speed + Gear + 5 Damage LEDs)
   let Ye=0;
   function Xe(spd,gear,air){
     let now=performance.now();if(now-Ye<65)return;Ye=now;
     let{ctx:a2,tex:o2}=De;
     a2.fillStyle=`#070b14`;a2.fillRect(0,0,512,192);
-    // Top RPM shift LED bar
     let rpm=Math.min(1,spd%36/36*.65+spd/180*.55);
     for(let k=0;k<18;k++){
       a2.fillStyle=k/18<=rpm?(k>13?`#ef4444`:k>8?`#cef51b`:`#22c55e`):`#182234`;
       a2.fillRect(16+k*27,12,21,22);
     }
-    // Digital Speed
     a2.fillStyle=`#f8fafc`;a2.font=`900 84px monospace`;a2.textAlign=`right`;
     a2.fillText(String(Math.round(spd)).padStart(3,` `),292,134);
     a2.fillStyle=`#94a3b8`;a2.font=`800 22px sans-serif`;a2.textAlign=`left`;
     a2.fillText(`KM/H`,302,130);
-    // Big Gear Indicator
     a2.fillStyle=air?`#38bdf8`:n.accentCss;a2.fillRect(398,52,96,104);
     a2.fillStyle=`#070b14`;a2.font=`900 72px monospace`;a2.textAlign=`center`;
     a2.fillText(String(gear),446,128);
-    // Bottom RobotMaker & 5 Damage Warning Dots
     a2.fillStyle=`rgba(255,255,255,.55)`;a2.font=`italic 800 18px sans-serif`;a2.textAlign=`left`;
     a2.fillText(`RobotMaker WRC1`,18,176);
     let zCols=[dmgVis.front,dmgVis.engine,dmgVis.left,dmgVis.right,dmgVis.rear],zLbls=[`F`,`M`,`L`,`R`,`H`];
@@ -6287,25 +6556,21 @@ function Of(e,t={}){
       if(damage)setDamageState(damage);
       i.position.y=chassisHeave;i.rotation.x=chassisPitch;i.rotation.z=chassisRoll;
       ke.rotation.z=steerAngle*2.2;
-      // Hydraulic handbrake lever animation
       let hbTarget=handbraking?-.48:0;
       hbPull+=(hbTarget-hbPull)*Math.min(1,dt*16);
       hbPivot.rotation.x=hbPull;
-      // Tail lights + FIA rain light flash + glowing brake rotors
-      m.emissiveIntensity=braking?3.8:.85;
+      m.emissiveIntensity=braking?3.8:.95;
       rainLedM.emissiveIntensity=(braking||dmgVis.rear>.5)?(.4+((Math.floor(visTime*9)%2)?2.8:.2)):.3;
       let heatTarget=(braking&&speedKmh>28)?Math.min(1,(speedKmh-22)/95):0;
       brakeHeatVis+=(heatTarget-brakeHeatVis)*Math.min(1,dt*(heatTarget>brakeHeatVis?3.8:1.2));
       discMat.emissiveIntensity=brakeHeatVis*2.6;
-      // Headlight flicker / failure on heavy front+corner damage
       let lDead=dmgVis.front>.82&&dmgVis.left>.52,rDead=dmgVis.front>.82&&dmgVis.right>.52;
       let lFlk=(dmgVis.front>.48&&dmgVis.left>.32)?((Math.sin(visTime*37)+Math.sin(visTime*61))>-.6?1:.15):1;
       let rFlk=(dmgVis.front>.48&&dmgVis.right>.32)?((Math.sin(visTime*43+2)+Math.sin(visTime*53))>-.6?1:.15):1;
       let lFac=lightsEnabled?(lDead?0:lFlk):0,rFac=lightsEnabled?(rDead?0:rFlk):0;
-      pL.emissiveIntensity=2.6*lFac;pR.emissiveIntensity=2.6*rFac;
+      pL.emissiveIntensity=2.8*lFac;pR.emissiveIntensity=2.8*rFac;
       B.intensity=baseLightInt*lFac;Pe.intensity=baseLightInt*rFac;
       podLampM.emissiveIntensity=(lightsEnabled&&podEnabled)?(dmgVis.front>.75?.4:2.8):0;
-      // Backfire exhaust flame animation
       if(bfTimer>0){
         bfTimer-=dt;backfireG.visible=!0;
         let sc=.72+Math.random()*.58;
@@ -6313,7 +6578,6 @@ function Of(e,t={}){
         bfLight.intensity=12*Math.min(1,bfTimer*10);
         tiMat.emissiveIntensity=.85;
       }else{backfireG.visible=!1;bfLight.intensity=0;tiMat.emissiveIntensity=.18;}
-      // Wheels + dynamic suspension coil compression
       for(let k=0;k<Ie.length;k++){
         let w2=Ie[k];
         w2.front&&(w2.steerGroup.rotation.y=steerAngle);
@@ -6323,7 +6587,6 @@ function Of(e,t={}){
         w2.coil.scale.y=Math.max(.55,1-cmp*1.55);
         w2.arm.rotation.z=w2.sgn*(-cmp*1.1);
       }
-      // Tire gravel dust
       if(grounded&&speedKmh>6){
         let rate=Math.min(44,10+speedKmh*.22+slipAmount*14);H+=dt*rate;
         let idxW=Math.random()<.5?0:1;
@@ -6345,13 +6608,12 @@ function Of(e,t={}){
         p2.sprite.scale.set(sc,sc,1);p2.mat.rotation+=p2.rotSpeed*dt;
         p2.mat.opacity=p2.maxOpacity*Math.min(1,f2/.14)*(1-f2)**1.35;
       }
-      // Subtle Engine Smoke rising from hood vents when engine damage > 52%
       if(dmgVis.engine>.52){
         let sev=Math.min(1,(dmgVis.engine-.52)/.48);
         smokeAcc+=dt*(4+sev*14);
         for(;smokeAcc>=1;){
           --smokeAcc;
-          _hoodWorld.set((Math.random()-.5)*.85,1.02,-1.32);
+          _hoodWorld.set((Math.random()-.5)*.80,.96,-1.35);
           i.localToWorld(_hoodWorld);
           let sv=carForward.clone().multiplyScalar(-Math.min(6,speedKmh*.045));
           sv.y=1.15+sev*1.2+Math.random()*.6;sv.x+=(Math.random()-.5)*.7;sv.z+=(Math.random()-.5)*.7;
